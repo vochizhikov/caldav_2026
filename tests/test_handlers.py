@@ -81,6 +81,94 @@ def telegram_callback(data, update_id, user_id=555):
     )
 
 
+def buttons_by_callback(message):
+    return {
+        button.callback_data: button.text
+        for row in message.reply_markup.inline_keyboard
+        for button in row
+    }
+
+
+@pytest.mark.parametrize("connected", [False, True])
+@pytest.mark.parametrize("entry_point", ["/start", "/help", "/cancel", "/menu", "menu:home"])
+async def test_main_menu_reflects_account_connection(sessions, settings, connected, entry_point):
+    if connected:
+        async with sessions.begin() as session:
+            session.add(
+                User(
+                    telegram_id=555,
+                    chat_id=555,
+                    yandex_login="test@yandex.ru",
+                    encrypted_password="encrypted",
+                )
+            )
+    transport = FakeTelegram()
+    bot = Bot(settings.bot_token.get_secret_value(), session=transport)
+    synchronizer = Synchronizer(sessions, AsyncMock(), AsyncMock(), settings)
+    dispatcher = create_dispatcher(sessions, synchronizer, settings)
+    update = (
+        telegram_message(entry_point, 1)
+        if entry_point.startswith("/")
+        else telegram_callback(entry_point, 1)
+    )
+    try:
+        await dispatcher.feed_update(bot, update, settings=settings)
+        buttons = buttons_by_callback(transport.calls[-1])
+        assert {"menu:calendars", "menu:events", "menu:settings"} <= buttons.keys()
+        if connected:
+            assert "menu:connect" not in buttons
+        else:
+            assert buttons["menu:connect"] == "🔗 Подключить Яндекс аккаунт"
+    finally:
+        await dispatcher.storage.close()
+        await bot.session.close()
+
+
+@pytest.mark.parametrize("entry_point", ["/connect", "menu:connect"])
+async def test_connected_account_requires_disconnect_before_connect(
+    sessions, settings, entry_point
+):
+    async with sessions.begin() as session:
+        session.add(
+            User(
+                telegram_id=555,
+                chat_id=555,
+                yandex_login="existing@yandex.ru",
+                encrypted_password="existing-encrypted-password",
+            )
+        )
+    transport = FakeTelegram()
+    bot = Bot(settings.bot_token.get_secret_value(), session=transport)
+    client = AsyncMock()
+    vault = AsyncMock()
+    synchronizer = Synchronizer(sessions, client, vault, settings)
+    dispatcher = create_dispatcher(sessions, synchronizer, settings)
+    context = dict(calendar_client=client, vault=vault, settings=settings)
+    update = (
+        telegram_message(entry_point, 1)
+        if entry_point.startswith("/")
+        else telegram_callback(entry_point, 1)
+    )
+    try:
+        await dispatcher.feed_update(bot, update, **context)
+        reply = transport.calls[-1]
+        assert "/disconnect" in reply.text
+        assert "menu:connect" not in buttons_by_callback(reply)
+        state = dispatcher.fsm.get_context(bot=bot, chat_id=555, user_id=555)
+        assert await state.get_state() is None
+        for index, value in enumerate(["replacement@yandex.ru", "replacement-password"], 2):
+            await dispatcher.feed_update(bot, telegram_message(value, index), **context)
+        client.calendars.assert_not_awaited()
+        vault.encrypt.assert_not_called()
+        async with sessions() as session:
+            user = await session.scalar(select(User).where(User.telegram_id == 555))
+            assert user.yandex_login == "existing@yandex.ru"
+            assert user.encrypted_password == "existing-encrypted-password"
+    finally:
+        await dispatcher.storage.close()
+        await bot.session.close()
+
+
 async def test_onboarding_settings_and_account_isolation(sessions, settings):
     transport = FakeTelegram()
     bot = Bot(settings.bot_token.get_secret_value(), session=transport)
@@ -94,9 +182,20 @@ async def test_onboarding_settings_and_account_isolation(sessions, settings):
         calendar_client=client, vault=vault, synchronizer=synchronizer, settings=settings
     )
     try:
-        for index, text in enumerate(["/start", "/connect", "test@yandex.ru", "app-password"]):
+        await dispatcher.feed_update(bot, telegram_message("/start", 0), **context)
+        assert (
+            buttons_by_callback(transport.calls[-1])["menu:connect"]
+            == "🔗 Подключить Яндекс аккаунт"
+        )
+        for index, text in enumerate(["/connect", "test@yandex.ru", "app-password"], 1):
             await dispatcher.feed_update(bot, telegram_message(text, index), **context)
         assert any(isinstance(call, DeleteMessage) for call in transport.calls)
+        assert (
+            buttons_by_callback(transport.calls[-1])["account:disconnect"]
+            == "Отключить Яндекс аккаунт"
+        )
+        await dispatcher.feed_update(bot, telegram_message("/menu", 4), **context)
+        assert "menu:connect" not in buttons_by_callback(transport.calls[-1])
         async with sessions() as session:
             user = await session.scalar(select(User).where(User.telegram_id == 555))
             assert vault.decrypt(user.encrypted_password) == "app-password"
@@ -131,10 +230,17 @@ async def test_onboarding_settings_and_account_isolation(sessions, settings):
         await dispatcher.feed_update(
             bot, telegram_callback("account:disconnect:confirm", 30), **context
         )
+        assert (
+            buttons_by_callback(transport.calls[-1])["menu:connect"]
+            == "🔗 Подключить Яндекс аккаунт"
+        )
         async with sessions() as session:
             assert await session.scalar(select(func.count(MyCalendar.id))) == 0
             user = await session.scalar(select(User).where(User.telegram_id == 555))
             assert user.encrypted_password is None
+        await dispatcher.feed_update(bot, telegram_callback("menu:connect", 31), **context)
+        state = dispatcher.fsm.get_context(bot=bot, chat_id=555, user_id=555)
+        assert await state.get_state() == ConnectAccount.login.state
     finally:
         await dispatcher.storage.close()
         await bot.session.close()

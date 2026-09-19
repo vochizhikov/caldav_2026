@@ -28,7 +28,10 @@ CONNECT_TEXT = (
 
 async def show_calendars(message: Message, session, user):
     if not user.encrypted_password:
-        await message.answer("🔗 Сначала подключите Яндекс: /connect", reply_markup=menu_keyboard())
+        await message.answer(
+            "🔗 Сначала подключите Яндекс: /connect",
+            reply_markup=menu_keyboard(connected=bool(user.encrypted_password)),
+        )
         return
     calendars = await user_calendars(session, user.id)
     text = "📅 Выберите календари для уведомлений.\n"
@@ -58,15 +61,22 @@ def build_router():
     router = Router(name="my_calendars")
 
     @router.message(Command("connect"))
-    async def connect_command(message: Message, state: FSMContext):
+    async def connect_command(message: Message, state: FSMContext, user):
         await state.clear()
+        if user.encrypted_password:
+            await message.answer(
+                "🔗 Яндекс аккаунт уже подключён.\n"
+                "Чтобы подключить другой аккаунт, сначала отключите текущий: /disconnect",
+                reply_markup=menu_keyboard(connected=True),
+            )
+            return
         await state.set_state(ConnectAccount.login)
         await message.answer(CONNECT_TEXT)
 
     @router.callback_query(F.data == "menu:connect")
-    async def connect_callback(query: CallbackQuery, state: FSMContext):
+    async def connect_callback(query: CallbackQuery, state: FSMContext, user):
         await query.answer()
-        await connect_command(query.message, state)
+        await connect_command(query.message, state, user)
 
     @router.message(Command("calendars"))
     async def calendars_command(message: Message, state: FSMContext, session, user):
@@ -130,7 +140,7 @@ def build_router():
     async def disconnect_prompt(message: Message, state: FSMContext):
         await state.clear()
         await message.answer(
-            "🔌 <b>Отключить аккаунт?</b>\n\n"
+            "🔌 <b>Отключить Яндекс аккаунт?</b>\n\n"
             "🗑 Удалить сохранённый пароль, копии календарей и очередь уведомлений из бота?\n"
             "☁️ Ваши события в Яндексе сохранятся.",
             reply_markup=disconnect_keyboard(),
@@ -148,7 +158,8 @@ def build_router():
         await state.clear()
         await query.answer("✅ Аккаунт отключён")
         await query.message.answer(
-            "✅ Данные календарей и пароль удалены из бота.", reply_markup=menu_keyboard()
+            "✅ Данные календарей и пароль удалены из бота.",
+            reply_markup=menu_keyboard(connected=bool(user.encrypted_password)),
         )
 
     @router.message(ConnectAccount.login)

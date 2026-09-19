@@ -37,18 +37,25 @@ def build_router():
     router = Router(name="common")
 
     @router.message(CommandStart())
-    async def start(message: Message, state: FSMContext):
+    async def start(message: Message, state: FSMContext, user):
         await state.clear()
-        await message.answer(WELCOME, reply_markup=menu_keyboard())
+        await message.answer(
+            WELCOME, reply_markup=menu_keyboard(connected=bool(user.encrypted_password))
+        )
 
     @router.message(Command("help"))
-    async def help_message(message: Message, state: FSMContext):
+    async def help_message(message: Message, state: FSMContext, user):
         await state.clear()
-        await message.answer(HELP, reply_markup=menu_keyboard())
+        await message.answer(
+            HELP, reply_markup=menu_keyboard(connected=bool(user.encrypted_password))
+        )
 
     @router.message(Command("cancel"))
-    async def cancel(message: Message, state: FSMContext):
+    async def cancel(message: Message, state: FSMContext, user):
         await state.clear()
-        await message.answer("✖️ Ввод отменён.", reply_markup=menu_keyboard())
+        await message.answer(
+            "✖️ Ввод отменён.",
+            reply_markup=menu_keyboard(connected=bool(user.encrypted_password)),
+        )
 
     return router

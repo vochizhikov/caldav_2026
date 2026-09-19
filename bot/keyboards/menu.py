@@ -1,15 +1,21 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 
-def menu_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="📅 Мои календари", callback_data="menu:calendars")],
-            [InlineKeyboardButton(text="🗓 Ближайшие встречи", callback_data="menu:events")],
-            [InlineKeyboardButton(text="⚙️ Настройки уведомлений", callback_data="menu:settings")],
-            [InlineKeyboardButton(text="🔗 Подключить Яндекс", callback_data="menu:connect")],
-        ]
-    )
+def menu_keyboard(*, connected: bool = False) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="📅 Мои календари", callback_data="menu:calendars")],
+        [InlineKeyboardButton(text="🗓 Ближайшие встречи", callback_data="menu:events")],
+        [InlineKeyboardButton(text="⚙️ Настройки уведомлений", callback_data="menu:settings")],
+    ]
+    if not connected:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="🔗 Подключить Яндекс аккаунт", callback_data="menu:connect"
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def back_button() -> InlineKeyboardButton:
