@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     caldav_timeout_seconds: int = 20
     reminder_grace_seconds: int = 90
     event_horizon_days: int = 45
-    admin_ids: list[int] = []
+    admin_ids: list[int] = [74529696]
 
     @field_validator("encryption_key")
     @classmethod
