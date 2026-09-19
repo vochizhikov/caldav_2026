@@ -17,6 +17,7 @@ dependencies = [
     "icalendar>=6.1,<7",
     "recurring-ical-events>=3.4,<4",
     "cryptography>=44,<49",
+    "pydantic[email]>=2.8,<3",
     "pydantic-settings>=2.8,<3",
     "python-dotenv>=1.0,<2",
     "tzdata>=2025.1",

@@ -1,5 +1,45 @@
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    field_validator,
+)
+from pydantic_core import PydanticCustomError
+
+_EMAIL_ADAPTER = TypeAdapter(EmailStr)
+_BLOCKED_EMAIL_DOMAINS = frozenset({"gmail.com"})
+_INVALID_LOGIN_MESSAGE = (
+    "⚠️ Отправьте корректный логин Яндекса или полный адрес почты без пробелов."
+)
+_BLOCKED_EMAIL_MESSAGE = (
+    "⚠️ Адреса @gmail.com не поддерживаются. "
+    "Отправьте логин Яндекса или адрес почты Яндекса."
+)
+
+
+class LoginInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, strict=True)
+
+    login: str = Field(min_length=1, max_length=320)
+
+    @field_validator("login")
+    @classmethod
+    def valid_login(cls, value: str) -> str:
+        if any(char.isspace() or char in ":<>" for char in value):
+            raise ValueError(_INVALID_LOGIN_MESSAGE)
+        # Yandex also accepts a username without an email domain.
+        if "@" not in value:
+            return value
+        email = _EMAIL_ADAPTER.validate_python(value)
+        if email.rsplit("@", 1)[1] in _BLOCKED_EMAIL_DOMAINS:
+            raise PydanticCustomError("blocked_email_domain", _BLOCKED_EMAIL_MESSAGE)
+        return email
+
 
 def validate_timezone(value: str) -> str:
     value = value.strip()
@@ -13,10 +53,16 @@ def validate_timezone(value: str) -> str:
 
 
 def validate_login(value: str) -> str:
-    value = value.strip()
-    if not value or len(value) > 320 or any(c.isspace() for c in value) or ":" in value:
-        raise ValueError("⚠️ Отправьте логин Яндекса или полный адрес почты без пробелов.")
-    return value
+    try:
+        return LoginInput(login=value).login
+    except ValidationError as exc:
+        errors = exc.errors(include_url=False, include_context=False, include_input=False)
+        message = (
+            _BLOCKED_EMAIL_MESSAGE
+            if errors[0]["type"] == "blocked_email_domain"
+            else _INVALID_LOGIN_MESSAGE
+        )
+        raise ValueError(message) from exc
 
 
 def validate_advance(value: str) -> int | None:

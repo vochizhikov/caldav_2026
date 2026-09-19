@@ -171,6 +171,67 @@ async def test_connected_account_requires_disconnect_before_connect(
         await bot.session.close()
 
 
+@pytest.mark.parametrize(
+    "invalid_login", ["private-marker@GMAIL.COM", "private-marker@@yandex.ru", None]
+)
+async def test_invalid_login_can_be_retried_without_saving_credentials(
+    sessions, settings, invalid_login
+):
+    transport = FakeTelegram()
+    bot = Bot(settings.bot_token.get_secret_value(), session=transport)
+    client = AsyncMock()
+    vault = AsyncMock()
+    synchronizer = Synchronizer(sessions, client, vault, settings)
+    dispatcher = create_dispatcher(sessions, synchronizer, settings)
+    context = dict(calendar_client=client, vault=vault, settings=settings)
+    state = dispatcher.fsm.get_context(bot=bot, chat_id=555, user_id=555)
+    try:
+        await dispatcher.feed_update(bot, telegram_message("/connect", 1), **context)
+        if invalid_login is None:
+            update_data = telegram_message("placeholder", 2).model_dump()
+            update_data["message"].pop("text")
+            update_data["message"]["photo"] = [
+                {
+                    "file_id": "photo-id",
+                    "file_unique_id": "photo-unique-id",
+                    "width": 1,
+                    "height": 1,
+                }
+            ]
+            update = Update.model_validate(update_data)
+        else:
+            update = telegram_message(invalid_login, 2)
+        await dispatcher.feed_update(bot, update, **context)
+        assert await state.get_state() == ConnectAccount.login.state
+        assert "login" not in await state.get_data()
+        error_text = transport.calls[-1].text
+        assert error_text and "private-marker" not in error_text
+        assert "validation error" not in error_text.lower()
+        assert "input_value" not in error_text
+        client.calendars.assert_not_awaited()
+        vault.encrypt.assert_not_called()
+        async with sessions() as session:
+            user = await session.scalar(select(User).where(User.telegram_id == 555))
+            assert user.yandex_login is None and user.encrypted_password is None
+
+        await dispatcher.feed_update(bot, telegram_message("  Name@YANDEX.RU  ", 3), **context)
+        assert await state.get_state() == ConnectAccount.password.state
+        assert (await state.get_data())["login"] == "Name@yandex.ru"
+        assert "Name@yandex.ru" in transport.calls[-1].text
+        client.calendars.assert_not_awaited()
+        vault.encrypt.assert_not_called()
+        async with sessions() as session:
+            user = await session.scalar(select(User).where(User.telegram_id == 555))
+            assert user.yandex_login is None and user.encrypted_password is None
+
+        await dispatcher.feed_update(bot, telegram_message("/cancel", 4), **context)
+        assert await state.get_state() is None
+        assert await state.get_data() == {}
+    finally:
+        await dispatcher.storage.close()
+        await bot.session.close()
+
+
 @pytest.mark.parametrize("calendar_count", [1, 3])
 async def test_onboarding_settings_and_account_isolation(sessions, settings, calendar_count):
     transport = FakeTelegram()
