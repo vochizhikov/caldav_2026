@@ -4,11 +4,11 @@ import logging
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.types import BotCommand
 from pydantic import ValidationError
 
 from bot.config import get_settings
 from bot.dispatcher import create_dispatcher
+from bot.profile import configure_commands
 from bot.services.security import CredentialVault
 from bot.services.synchronizer import Synchronizer
 from bot.services.user_notifier import UserNotifier
@@ -37,19 +37,7 @@ async def run():
     tasks = []
     try:
         await bot.delete_webhook(drop_pending_updates=False)
-        await bot.set_my_commands(
-            [
-                BotCommand(command="start", description="Начать работу"),
-                BotCommand(command="connect", description="Подключить Яндекс"),
-                BotCommand(command="calendars", description="Выбрать календари"),
-                BotCommand(command="events", description="Ближайшие встречи"),
-                BotCommand(command="settings", description="Уведомления и часовой пояс"),
-                BotCommand(command="sync", description="Синхронизировать сейчас"),
-                BotCommand(command="disconnect", description="Отключить Яндекс"),
-                BotCommand(command="cancel", description="Отменить ввод"),
-                BotCommand(command="help", description="Помощь"),
-            ]
-        )
+        await configure_commands(bot)
         tasks = [
             asyncio.create_task(synchronizer.run(), name="calendar-sync"),
             asyncio.create_task(notifier.run(), name="notifications"),

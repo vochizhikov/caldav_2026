@@ -4,9 +4,24 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 from bot.keyboards.menu import menu_keyboard
+from bot.profile import BOT_NAME
+
+WELCOME = (
+    f"📅 <b>{BOT_NAME}</b>\n"
+    "Ваши встречи из Яндекс Календаря — под рукой в Telegram.\n\n"
+    "Покажу ближайшие встречи, напомню заранее и в момент начала, "
+    "сообщу о новых событиях, изменениях и отменах.\n\n"
+    "<b>Начнём с трёх шагов:</b>\n"
+    "1. /connect — подключите Яндекс с паролем приложения «Календарь».\n"
+    "2. /calendars — включите нужные календари.\n"
+    "3. /settings — настройте напоминания и часовой пояс.\n\n"
+    "Встречи создавайте и изменяйте в Яндекс Календаре. "
+    "Основной пароль аккаунта не отправляйте.\n\n"
+    "Все команды и подробности — /help."
+)
 
 HELP = (
-    "👋 Я слежу за встречами в Яндекс Календаре и присылаю уведомления.\n\n"
+    f"📖 <b>{BOT_NAME} · Помощь</b>\n\n"
     "🔗 /connect — подключите Яндекс с паролем приложения «Календарь».\n"
     "📅 /calendars — выберите календари.\n"
     "⚙️ /settings — выберите уведомления и время напоминаний.\n\n"
@@ -22,8 +37,12 @@ def build_router():
     router = Router(name="common")
 
     @router.message(CommandStart())
-    @router.message(Command("help"))
     async def start(message: Message, state: FSMContext):
+        await state.clear()
+        await message.answer(WELCOME, reply_markup=menu_keyboard())
+
+    @router.message(Command("help"))
+    async def help_message(message: Message, state: FSMContext):
         await state.clear()
         await message.answer(HELP, reply_markup=menu_keyboard())
 

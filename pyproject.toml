@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Telegram polling bot with Yandex CalDAV notifications"
 requires-python = ">=3.12"
 dependencies = [
-    "aiogram>=3.20,<4",
+    "aiogram>=3.31,<4",
     "SQLAlchemy[asyncio]>=2.0.40,<2.1",
     "aiosqlite>=0.21,<1",
     "alembic>=1.15,<2",
@@ -28,6 +28,9 @@ dev = ["pytest>=8.3,<10", "pytest-asyncio>=0.26,<2", "ruff>=0.11,<1"]
 
 [tool.setuptools.packages.find]
 include = ["bot*", "CalendarClient*", "db*"]
+
+[tool.setuptools.package-data]
+bot = ["assets/avatar.jpg"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

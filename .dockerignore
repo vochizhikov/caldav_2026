@@ -8,6 +8,8 @@
 !bot/
 bot/**
 !bot/**/*.py
+!bot/assets/
+!bot/assets/avatar.jpg
 !CalendarClient/
 CalendarClient/**
 !CalendarClient/**/*.py
