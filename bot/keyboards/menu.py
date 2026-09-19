@@ -4,14 +4,13 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 def menu_keyboard(*, connected: bool = False) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="📅 Мои календари", callback_data="menu:calendars")],
-        [InlineKeyboardButton(text="🗓 Ближайшие встречи", callback_data="menu:events")],
-        [InlineKeyboardButton(text="⚙️ Настройки уведомлений", callback_data="menu:settings")],
+        [InlineKeyboardButton(text="🗓 Ближайшие события", callback_data="menu:events")],
     ]
     if not connected:
         rows.append(
             [
                 InlineKeyboardButton(
-                    text="🔗 Подключить Яндекс аккаунт", callback_data="menu:connect"
+                    text="🔗 Подключить Яндекс Аккаунт", callback_data="menu:connect"
                 )
             ]
         )

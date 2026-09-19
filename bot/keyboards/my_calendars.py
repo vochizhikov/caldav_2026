@@ -15,6 +15,9 @@ def calendars_keyboard(calendars) -> InlineKeyboardMarkup:
     ]
     rows.append([InlineKeyboardButton(text="🔄 Синхронизировать", callback_data="calendar:sync")])
     rows.append(
+        [InlineKeyboardButton(text="⚙️ Настройки уведомлений", callback_data="menu:settings")]
+    )
+    rows.append(
         [InlineKeyboardButton(text="Отключить Яндекс аккаунт", callback_data="account:disconnect")]
     )
     rows.append([back_button()])

@@ -114,11 +114,12 @@ async def test_main_menu_reflects_account_connection(sessions, settings, connect
     try:
         await dispatcher.feed_update(bot, update, settings=settings)
         buttons = buttons_by_callback(transport.calls[-1])
-        assert {"menu:calendars", "menu:events", "menu:settings"} <= buttons.keys()
+        assert buttons["menu:events"] == "🗓 Ближайшие события"
         if connected:
-            assert "menu:connect" not in buttons
+            assert list(buttons) == ["menu:calendars", "menu:events"]
         else:
-            assert buttons["menu:connect"] == "🔗 Подключить Яндекс аккаунт"
+            assert list(buttons) == ["menu:calendars", "menu:events", "menu:connect"]
+            assert buttons["menu:connect"] == "🔗 Подключить Яндекс Аккаунт"
     finally:
         await dispatcher.storage.close()
         await bot.session.close()
@@ -185,7 +186,7 @@ async def test_onboarding_settings_and_account_isolation(sessions, settings):
         await dispatcher.feed_update(bot, telegram_message("/start", 0), **context)
         assert (
             buttons_by_callback(transport.calls[-1])["menu:connect"]
-            == "🔗 Подключить Яндекс аккаунт"
+            == "🔗 Подключить Яндекс Аккаунт"
         )
         for index, text in enumerate(["/connect", "test@yandex.ru", "app-password"], 1):
             await dispatcher.feed_update(bot, telegram_message(text, index), **context)
@@ -204,6 +205,25 @@ async def test_onboarding_settings_and_account_isolation(sessions, settings):
             assert not calendar.enabled and not calendar.initialized
             calendar_id = calendar.id
         client.snapshot.assert_not_awaited()
+        await dispatcher.feed_update(bot, telegram_callback("menu:calendars", 5), **context)
+        calendar_rows = transport.calls[-1].reply_markup.inline_keyboard
+        assert [row[0].callback_data for row in calendar_rows[-4:]] == [
+            "calendar:sync",
+            "menu:settings",
+            "account:disconnect",
+            "menu:home",
+        ]
+        settings_button = calendar_rows[-3][0]
+        assert settings_button.text == "⚙️ Настройки уведомлений"
+        await dispatcher.feed_update(
+            bot, telegram_callback(settings_button.callback_data, 6), **context
+        )
+        back_button = transport.calls[-1].reply_markup.inline_keyboard[-1][0]
+        assert back_button.text == "← Мои календари"
+        await dispatcher.feed_update(
+            bot, telegram_callback(back_button.callback_data, 7), **context
+        )
+        assert f"calendar:toggle:{calendar_id}" in buttons_by_callback(transport.calls[-1])
         await dispatcher.feed_update(bot, telegram_callback("settings:advance:10", 10), **context)
         await dispatcher.feed_update(
             bot, telegram_callback("settings:toggle:remind_at_start", 11), **context
@@ -232,7 +252,7 @@ async def test_onboarding_settings_and_account_isolation(sessions, settings):
         )
         assert (
             buttons_by_callback(transport.calls[-1])["menu:connect"]
-            == "🔗 Подключить Яндекс аккаунт"
+            == "🔗 Подключить Яндекс Аккаунт"
         )
         async with sessions() as session:
             assert await session.scalar(select(func.count(MyCalendar.id))) == 0

@@ -1,6 +1,5 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from bot.keyboards.menu import back_button
 from bot.utils.settings_utils import NOTIFICATION_LABELS
 from db.models import User
 
@@ -35,5 +34,5 @@ def settings_keyboard(user: User) -> InlineKeyboardMarkup:
     rows.append(
         [InlineKeyboardButton(text=f"🌍 {user.timezone}", callback_data="settings:timezone")]
     )
-    rows.append([back_button()])
+    rows.append([InlineKeyboardButton(text="← Мои календари", callback_data="menu:calendars")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
