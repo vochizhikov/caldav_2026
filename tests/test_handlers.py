@@ -171,11 +171,15 @@ async def test_connected_account_requires_disconnect_before_connect(
         await bot.session.close()
 
 
-async def test_onboarding_settings_and_account_isolation(sessions, settings):
+@pytest.mark.parametrize("calendar_count", [1, 3])
+async def test_onboarding_settings_and_account_isolation(sessions, settings, calendar_count):
     transport = FakeTelegram()
     bot = Bot(settings.bot_token.get_secret_value(), session=transport)
     client = AsyncMock()
-    client.calendars.return_value = [RemoteCalendar("https://caldav.yandex.ru/cal/test", "Рабочий")]
+    client.calendars.return_value = [
+        RemoteCalendar(f"https://caldav.yandex.ru/cal/{index}", name)
+        for index, name in enumerate(["Рабочий", "Личный", "Праздники"][:calendar_count])
+    ]
     client.snapshot.return_value = CalendarSnapshot()
     vault = CredentialVault(settings.encryption_key.get_secret_value())
     synchronizer = Synchronizer(sessions, client, vault, settings)
@@ -202,9 +206,15 @@ async def test_onboarding_settings_and_account_isolation(sessions, settings):
             user = await session.scalar(select(User).where(User.telegram_id == 555))
             assert vault.decrypt(user.encrypted_password) == "app-password"
             assert user.encrypted_password != "app-password"
-            calendar = await session.scalar(select(MyCalendar))
-            assert not calendar.enabled and not calendar.initialized
-            calendar_id = calendar.id
+            calendars = list(await session.scalars(select(MyCalendar).order_by(MyCalendar.id)))
+            assert [calendar.name for calendar in calendars] == [
+                remote.name for remote in client.calendars.return_value
+            ]
+            assert [calendar.enabled for calendar in calendars] == [True] + [False] * (
+                calendar_count - 1
+            )
+            assert all(not calendar.initialized for calendar in calendars)
+            calendar_id = calendars[0].id
         client.snapshot.assert_not_awaited()
         await dispatcher.feed_update(bot, telegram_callback("menu:calendars", 5), **context)
         calendar_rows = transport.calls[-1].reply_markup.inline_keyboard
@@ -236,15 +246,23 @@ async def test_onboarding_settings_and_account_isolation(sessions, settings):
         async with sessions() as session:
             user = await session.scalar(select(User).where(User.telegram_id == 555))
             assert user.advance_minutes == 10 and not user.remind_at_start
-            assert not (await session.get(MyCalendar, calendar_id)).enabled
+            assert (await session.get(MyCalendar, calendar_id)).enabled
         await dispatcher.feed_update(
             bot, telegram_callback(f"calendar:toggle:{calendar_id}", 14), **context
+        )
+        await dispatcher.feed_update(bot, telegram_message("/sync", 15), **context)
+        async with sessions() as session:
+            assert not (await session.get(MyCalendar, calendar_id)).enabled
+        client.snapshot.assert_not_awaited()
+        await dispatcher.feed_update(
+            bot, telegram_callback(f"calendar:toggle:{calendar_id}", 16), **context
         )
         for index, text in enumerate(["/settings", "/calendars", "/events", "/sync"], 20):
             await dispatcher.feed_update(bot, telegram_message(text, index), **context)
         async with sessions() as session:
             calendar = await session.get(MyCalendar, calendar_id)
             assert calendar.enabled and calendar.initialized and calendar.notifications_since
+        client.snapshot.assert_awaited_once()
         assert not any(
             "Не удалось выполнить" in (getattr(call, "text", "") or "") for call in transport.calls
         )
@@ -262,6 +280,14 @@ async def test_onboarding_settings_and_account_isolation(sessions, settings):
         await dispatcher.feed_update(bot, telegram_callback("menu:connect", 31), **context)
         state = dispatcher.fsm.get_context(bot=bot, chat_id=555, user_id=555)
         assert await state.get_state() == ConnectAccount.login.state
+        for index, text in enumerate(["test@yandex.ru", "app-password"], 32):
+            await dispatcher.feed_update(bot, telegram_message(text, index), **context)
+        async with sessions() as session:
+            calendars = list(await session.scalars(select(MyCalendar).order_by(MyCalendar.id)))
+            assert [calendar.enabled for calendar in calendars] == [True] + [False] * (
+                calendar_count - 1
+            )
+            assert all(not calendar.initialized for calendar in calendars)
     finally:
         await dispatcher.storage.close()
         await bot.session.close()

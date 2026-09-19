@@ -212,11 +212,15 @@ def build_router():
         user.yandex_login = login
         user.encrypted_password = vault.encrypt(password)
         await reconcile(session, user.id, calendars)
+        local_calendars = await user_calendars(session, user.id)
+        if local_calendars:
+            local_calendars[0].enabled = True
         await session.commit()
         await state.clear()
-        await message.answer(
-            "✅ Яндекс подключён.\n📅 Календари выключены по умолчанию — включите нужные в списке."
-        )
+        text = "✅ Яндекс подключён."
+        if local_calendars:
+            text += "\n📅 Первый календарь включён по умолчанию. Выбор можно изменить в списке."
+        await message.answer(text)
         await show_calendars(message, session, user)
 
     return router
