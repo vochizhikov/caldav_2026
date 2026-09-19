@@ -1,0 +1,20 @@
+# Allow only build inputs. Never send local secrets, databases or backups to the builder.
+**
+!Dockerfile
+!.dockerignore
+!pyproject.toml
+!README.md
+!alembic.ini
+!bot/
+bot/**
+!bot/**/*.py
+!CalendarClient/
+CalendarClient/**
+!CalendarClient/**/*.py
+!db/
+db/**
+!db/**/*.py
+!migrations/
+migrations/**
+!migrations/**/*.py
+!migrations/script.py.mako

@@ -1,0 +1,24 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.env
+.env.*
+!.env.example
+!.env.docker.example
+*.db
+*.db-*
+*.sqlite*
+data/
+.idea/
+build/
+dist/
+
+# Exported Docker images and their checksums
+/yandex-calendar-bot-*.tar
+/yandex-calendar-bot-*.tar.sha256
+
+# Local deployment notes with machine-specific addresses and paths
+/docs/OPENWRT_NOTES.txt

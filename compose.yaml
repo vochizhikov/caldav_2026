@@ -1,0 +1,27 @@
+services:
+  calendar-bot:
+    image: yandex-calendar-bot:latest
+    container_name: yandex-calendar-bot
+    command: ["python", "-m", "bot"]
+    network_mode: host
+    restart: always
+    env_file:
+      - .env.docker
+    environment:
+      # Keep SQLite on the mounted directory even if an old .env was copied here.
+      DATABASE_URL: sqlite+aiosqlite:////data/calendar_bot.db
+    volumes:
+      - ./data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,noexec,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
