@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from bot.config import get_settings
 from bot.dispatcher import create_dispatcher
-from bot.observability import install_audit
+from bot.observability import install_monitor
 from bot.profile import configure_commands
 from bot.services.security import CredentialVault
 from bot.services.synchronizer import Synchronizer
@@ -36,9 +36,9 @@ async def run():
     dispatcher = create_dispatcher(sessions, synchronizer, settings)
     notifier = UserNotifier(bot, sessions, settings)
     tasks = []
-    audit = None
+    monitor = None
     try:
-        audit = install_audit(
+        monitor = install_monitor(
             bot=bot,
             dispatcher=dispatcher,
             engine=engine,
@@ -67,7 +67,7 @@ async def run():
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         # aiogram stops polling but leaves its concurrently running handlers alive.
-        # Finish/cancel them while audit hooks, Telegram and the database still exist.
+        # Finish/cancel them while monitor hooks, Telegram and the database still exist.
         pending_updates = tuple(dispatcher._handle_update_tasks)
         if pending_updates:
             try:
@@ -76,8 +76,8 @@ async def run():
                 )
             except TimeoutError:
                 logger.warning("Cancelled unfinished Telegram handlers during shutdown")
-        if audit is not None:
-            await audit.close()
+        if monitor is not None:
+            await monitor.close()
         await dispatcher.storage.close()
         await bot.session.close()
         await engine.dispose()

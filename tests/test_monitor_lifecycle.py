@@ -90,7 +90,7 @@ async def test_shutdown_finishes_inflight_updates_before_closing_audit_and_resou
     monkeypatch.setattr(bot_runtime, "UserNotifier", lambda *args: notifier)
     monkeypatch.setattr(bot_runtime, "configure_commands", AsyncMock())
     monkeypatch.setattr(
-        bot_runtime, "install_audit", lambda **kwargs: audit if audit_enabled else None
+        bot_runtime, "install_monitor", lambda **kwargs: audit if audit_enabled else None
     )
 
     runner = asyncio.create_task(bot_runtime.run())

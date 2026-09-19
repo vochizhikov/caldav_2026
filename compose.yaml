@@ -10,7 +10,7 @@ services:
     environment:
       # Keep SQLite on the mounted directory even if an old .env was copied here.
       DATABASE_URL: sqlite+aiosqlite:////data/calendar_bot.db
-      AUDIT_DIRECTORY: /data/audit
+      MONITOR_DIRECTORY: /data/monitoring
     volumes:
       - ./data:/data
     read_only: true

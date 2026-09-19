@@ -11,7 +11,7 @@ Python 3.12+, aiogram 3, **Telegram long polling**, CalDAV, SQLAlchemy 2, SQLite
 Подробный разбор каждого файла, таблиц базы и всех процессов:
 [Устройство бота и полный путь данных](docs/ARCHITECTURE_RU.md).
 
-Журналы в Telegram: [темы, режимы, ежедневные архивы и отключение](docs/LOGGING_RU.md).
+Мониторинг в Telegram: [приход и уход пользователей, ошибки, слепки БД](docs/MONITORING_RU.md).
 
 Запуск на роутере: [Docker-образ и установка на OpenWrt](docs/OPENWRT.md).
 Сборка для ARM64: `.\docker\build-image.ps1 -Platform linux/arm64`;

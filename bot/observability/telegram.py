@@ -1,110 +1,93 @@
-"""Optional Telegram audit hooks, removable with one cleanup call.
+"""Removable lifecycle and private administrator snapshot hooks.
 
-Only selected message fields are recorded: sender/chat/message IDs, username, FSM
-state, text, caption, callback data and attachment type. Raw Updates, file bytes,
-contact details, locations, credentials in method dumps and exception messages
-are never serialized. Unknown free text and command arguments are encrypted.
+Message text, captions, callback data and outgoing replies are never serialized.
+Only allowlisted Telegram metadata and selected database columns enter monitoring.
 """
 
 from __future__ import annotations
 
-import logging
-from contextlib import nullcontext
-from contextvars import ContextVar
+from datetime import UTC, datetime
 
 from aiogram import BaseMiddleware
-from aiogram.client.session.middlewares.base import BaseRequestMiddleware
+from aiogram.dispatcher.event.bases import UNHANDLED
 from aiogram.enums import ChatType
-from aiogram.types import Message
+from aiogram.types import FSInputFile, Message
+from aiogram.types import User as TelegramUser
+from sqlalchemy import select
 
-from bot.states.states import ConnectAccount, EditSettings
-from bot.validators.settings import validate_login, validate_timezone
+from bot.observability.snapshots import SnapshotTooLarge
+from db.models import User
 
-logger = logging.getLogger(__name__)
-
-_CONTROL_COMMANDS = {"logs_setup", "logs_mode", "logs_status"}
-_SAFE_COMMANDS = {
-    "start", "help", "cancel", "menu", "connect", "disconnect", "calendars", "events",
-    "settings", "sync",
+_COMMANDS = {
+    "logs_setup", "monitor_setup", "logs_status", "monitor_status",
+    "db_user", "db_stats", "db_users",
 }
-_PLAIN_STATES = {
-    ConnectAccount.login.state: validate_login,
-    EditSettings.timezone.state: validate_timezone,
-}
-_OUTGOING_METHODS = {
-    "sendMessage", "sendPhoto", "sendDocument", "sendAudio", "sendVoice", "sendVideo",
-    "sendVideoNote", "sendAnimation", "sendSticker", "sendMediaGroup", "sendLocation",
-    "sendVenue", "sendContact", "sendPoll", "sendDice", "copyMessage", "copyMessages",
-    "forwardMessage", "forwardMessages", "editMessageText", "editMessageCaption",
-    "editMessageMedia", "editMessageReplyMarkup", "deleteMessage", "deleteMessages",
-    "answerCallbackQuery",
-}
-_conversation: ContextVar[dict | None] = ContextVar("telegram_audit_conversation", default=None)
-_control: ContextVar[bool] = ContextVar("telegram_audit_control", default=False)
+_TELEGRAM_FIELDS = (
+    "id", "username", "first_name", "last_name", "language_code", "is_premium", "is_bot",
+    "added_to_attachment_menu", "allows_write_to_pm",
+)
+_UNAVAILABLE = object()
 
 
-def _emit(audit, event, **fields):
+def _report(monitor, source, event, error, **fields):
     try:
-        audit.emit("conversation", event, **fields)
-    except Exception as exc:
-        # Observability must not prevent delivery or expose values in error logs.
-        logger.warning("Telegram audit write failed (%s)", type(exc).__name__)
+        monitor.error(source, event, error_type=type(error).__name__, **fields)
+    except Exception:
+        pass  # A monitor failure must not change application behaviour.
 
 
-def _encrypt(audit, text):
+def _telegram_profile(user):
+    return TelegramUser.model_validate({
+        key: value for key in _TELEGRAM_FIELDS
+        if (value := getattr(user, key, None)) is not None
+    })
+
+
+def _contact(monitor, user, db_user, *, kind, event_time):
     try:
-        audit.register_secret(text)
-        return audit.encrypt(text)
+        monitor.contact(_telegram_profile(user), db_user, kind=kind, event_time=event_time)
     except Exception as exc:
-        logger.warning("Telegram audit encryption failed (%s)", type(exc).__name__)
-        return "[ENCRYPTION_UNAVAILABLE]"
+        _report(monitor, "monitor", "contact_failed", exc, user_id=user.id)
 
 
-def _split_command(text):
+async def _load_user(sessions, *, telegram_id=None, user_id=None):
+    selector = User.id == user_id if user_id is not None else User.telegram_id == telegram_id
+    statement = select(
+        User.id, User.telegram_id, User.created_at, User.timezone, User.yandex_login,
+        User.encrypted_password.is_not(None).label("connected"), User.notifications_enabled,
+    ).where(selector)
+    async with sessions() as session:
+        row = (await session.execute(statement)).mappings().one_or_none()
+        return dict(row) if row is not None else None
+
+
+def _command(text):
     if not text or not text.startswith("/"):
         return None, None, ""
     parts = text.split(maxsplit=1)
-    command, _, mention = parts[0][1:].partition("@")
-    return command, mention or None, parts[1] if len(parts) > 1 else ""
+    name, _, mention = parts[0][1:].partition("@")
+    return name, mention or None, parts[1] if len(parts) > 1 else ""
 
 
-def _input_fields(audit, message, raw_state):
-    fields = {
-        "chat_id": message.chat.id,
-        "message_id": message.message_id,
-        "content_type": getattr(message.content_type, "value", message.content_type),
-        "state": raw_state,
-    }
-    if message.text is not None:
-        command, _, arguments = _split_command(message.text)
-        if raw_state == ConnectAccount.password.state:
-            fields["text_encrypted"] = _encrypt(audit, message.text)
-        elif command in _SAFE_COMMANDS:
-            fields["command"] = f"/{command}"
-            if arguments:
-                fields["arguments_encrypted"] = _encrypt(audit, arguments)
-        elif command is None and raw_state in _PLAIN_STATES:
-            try:
-                _PLAIN_STATES[raw_state](message.text)
-            except ValueError:
-                fields["text_encrypted"] = _encrypt(audit, message.text)
-            else:
-                fields["text"] = audit.sanitize(message.text)
-        else:
-            fields["text_encrypted"] = _encrypt(audit, message.text)
-    if message.caption is not None:
-        fields["caption_encrypted"] = _encrypt(audit, message.caption)
-    return fields
+class TelegramMonitorMiddleware(BaseMiddleware):
+    def __init__(self, monitor, sessions, snapshots):
+        self.monitor = monitor
+        self.sessions = sessions
+        self.snapshots = snapshots
 
-
-class TelegramAuditMiddleware(BaseMiddleware):
-    def __init__(self, audit):
-        self.audit = audit
+    async def _profile(self, telegram_id):
+        try:
+            return await _load_user(self.sessions, telegram_id=telegram_id)
+        except Exception as exc:
+            _report(self.monitor, "database", "profile_lookup_failed", exc, user_id=telegram_id)
+            return _UNAVAILABLE
 
     async def __call__(self, handler, event, data):
-        # Appended to update middleware after aiogram's FSM middleware: raw_state
-        # is read while FSM event isolation is held, before private-only sessions.
-        message = event.message or event.edited_message
+        if event.my_chat_member:
+            if await self._membership(event.my_chat_member, data["bot"]):
+                return None
+            return await handler(event, data)
+        message = event.message
         query = event.callback_query
         if message and await self._admin_command(message, data["bot"]):
             return None
@@ -112,188 +95,215 @@ class TelegramAuditMiddleware(BaseMiddleware):
         if subject is None:
             return await handler(event, data)
         message = query.message if query else message
-        if not isinstance(message, Message) or message.chat.type != ChatType.PRIVATE:
-            return await handler(event, data)
-        if message.chat.id == self.audit.chat_id:
+        if (
+            not isinstance(message, Message) or message.chat.type != ChatType.PRIVATE
+            or message.chat.id == self.monitor.chat_id
+        ):
             return await handler(event, data)
         user = subject.from_user
-        if not user or user.is_bot:
+        if not user or user.is_bot or user.id != message.chat.id:
             return await handler(event, data)
-        context = {"chat_id": message.chat.id, "user_id": user.id}
-        if query:
-            context["callback_query_id"] = query.id
-        token = _conversation.set(context)
+        event_time = datetime.now(UTC) if query else message.date
+        with self.monitor.operation(user_id=user.id):
+            return await self._observe_contact(handler, event, data, user, event_time)
+
+    async def _observe_contact(self, handler, event, data, user, event_time):
+        before = await self._profile(user.id)
+        if before is not None and before is not _UNAVAILABLE:
+            _contact(self.monitor, user, before, kind="seen", event_time=event_time)
         try:
-            with self.audit.operation(user_id=user.id, operation_id=f"tg-{event.update_id}"):
-                metadata = {"user_id": user.id, "username": user.username}
-                if query:
-                    _emit(
-                        self.audit, "user_callback", **metadata,
-                        chat_id=message.chat.id, message_id=message.message_id,
-                        callback_data=self.audit.sanitize(query.data),
-                    )
-                else:
-                    _emit(
-                        self.audit,
-                        "user_message_edited" if event.edited_message else "user_message",
-                        **metadata, **_input_fields(self.audit, message, data.get("raw_state")),
-                    )
-                try:
-                    return await handler(event, data)
-                except Exception as exc:
-                    _emit(self.audit, "handler_failed", error_type=type(exc).__name__)
-                    raise
+            return await handler(event, data)
+        except Exception as exc:
+            _report(self.monitor, "telegram", "handler_failed", exc, user_id=user.id)
+            raise
         finally:
-            _conversation.reset(token)
+            # SessionMiddleware has committed or rolled back before this read.
+            after = await self._profile(user.id)
+            if after is not None and after is not _UNAVAILABLE:
+                if before is None:
+                    _contact(self.monitor, user, after, kind="arrived", event_time=event_time)
+                elif before is _UNAVAILABLE:
+                    # Unknown pre-state must never turn an old user into a new one.
+                    _contact(self.monitor, user, after, kind="seen", event_time=event_time)
+                if before is not _UNAVAILABLE and bool(after["connected"]) != bool(
+                    before and before["connected"]
+                ):
+                    kind = "yandex_connected" if after["connected"] else "yandex_disconnected"
+                    _contact(self.monitor, user, after, kind=kind, event_time=event_time)
+                elif before is not None and before is not _UNAVAILABLE:
+                    _contact(self.monitor, user, after, kind="seen", event_time=event_time)
+
+    async def _membership(self, event, bot):
+        if event.chat.type != ChatType.PRIVATE:
+            return False
+        if (
+            event.from_user.id != event.chat.id or event.from_user.is_bot
+            or event.new_chat_member.user.id != bot.id
+        ):
+            return True
+        old = event.old_chat_member.status
+        new = event.new_chat_member.status
+        if old == new:
+            return True
+        if new == "kicked" and old == "member":
+            kind = "left"
+        elif old == "kicked" and new == "member":
+            kind = "returned"
+        else:
+            return True
+        with self.monitor.operation(user_id=event.chat.id):
+            profile = await self._profile(event.chat.id)
+            _contact(
+                self.monitor, event.from_user, None if profile is _UNAVAILABLE else profile,
+                kind=kind, event_time=event.date,
+            )
+        return True
 
     async def _admin_command(self, message, bot):
-        command, mention, arguments = _split_command(message.text)
-        if command not in _CONTROL_COMMANDS:
+        command, mention, arguments = _command(message.text)
+        if command not in _COMMANDS:
             return False
-        if mention and mention.lower() != (await bot.me()).username.lower():
-            return False
-        token = _control.set(True)
-        try:
-            user = message.from_user
-            if (
-                not user or user.is_bot or message.sender_chat is not None
-                or user.id not in self.audit.settings.admin_ids
-            ):
-                await message.answer("⛔ Команда доступна только администратору.", parse_mode=None)
-                return True
-            if command == "logs_setup":
-                if (
-                    message.chat.type != ChatType.SUPERGROUP
-                    or not message.chat.is_forum
-                    or arguments
-                ):
-                    await message.answer(
-                        "Отправьте /logs_setup без аргументов в закрытой группе с темами. "
-                        "Боту нужно право управления темами.", parse_mode=None,
-                    )
-                    return True
-                try:
-                    await self.audit.setup(bot, message.chat.id)
-                except Exception as exc:
-                    logger.warning("Telegram audit setup failed (%s)", type(exc).__name__)
-                    await message.answer(
-                        "Не удалось настроить темы. Проверьте право бота на управление "
-                        "темами и повторите /logs_setup. "
-                        f"Тип ошибки: {type(exc).__name__}.", parse_mode=None,
-                    )
-                else:
-                    await message.answer(
-                        "✅ Группа подключена. Темы: Переписка, CalDAV, База данных, Архивы.\n"
-                        "/logs_mode normal — обычный режим\n"
-                        "/logs_mode detailed 30 — подробный на 30 минут\n"
-                        "/logs_status — состояние журналов", parse_mode=None,
-                    )
-                return True
-            if (
-                message.chat.type != ChatType.PRIVATE
-                and message.chat.id != self.audit.chat_id
-            ):
+        if mention:
+            me = await bot.me()
+            if mention.lower() != (me.username or "").lower():
+                return False
+        user = message.from_user
+        if (
+            not user or user.is_bot or message.sender_chat is not None
+            or user.id not in self.monitor.settings.admin_ids
+        ):
+            await message.answer("⛔ Команда доступна только администратору.", parse_mode=None)
+            return True
+        if command in {"db_user", "db_stats", "db_users"}:
+            if message.chat.type != ChatType.PRIVATE or message.chat.id != user.id:
                 await message.answer(
-                    "Управление журналами доступно в личном чате с ботом "
-                    "или в подключённой группе.", parse_mode=None,
+                    "Команды базы данных доступны только в личном чате с ботом.", parse_mode=None,
                 )
                 return True
-            if command == "logs_mode":
-                parts = arguments.split()
-                valid = bool(parts) and parts[0] in {"normal", "detailed"}
-                minutes = self.audit.settings.detailed_minutes
-                if valid and parts[0] == "normal":
-                    valid = len(parts) == 1
-                elif valid:
-                    valid = len(parts) in {1, 2}
-                    if valid and len(parts) == 2:
-                        valid = parts[1].isascii() and parts[1].isdecimal()
-                        minutes = int(parts[1]) if valid and len(parts[1]) <= 4 else 0
-                        valid = valid and 1 <= minutes <= 1440
-                if not valid:
-                    await message.answer(
-                        "Используйте /logs_mode normal или /logs_mode detailed [минуты]. "
-                        "Срок подробного режима: от 1 до 1440 минут.", parse_mode=None,
-                    )
-                    return True
-                self.audit.set_mode(parts[0], minutes=minutes)
-            elif arguments:
-                await message.answer("Используйте /logs_status без аргументов.", parse_mode=None)
+        if command in {"logs_setup", "monitor_setup"}:
+            if (
+                message.chat.type != ChatType.SUPERGROUP or not message.chat.is_forum
+                or arguments
+            ):
+                await message.answer(
+                    "Отправьте /monitor_setup без аргументов в закрытой группе с темами. "
+                    "Боту нужно право управления темами.", parse_mode=None,
+                )
                 return True
-            await message.answer(self.audit.status_text(), parse_mode=None)
-            return True
-        finally:
-            _control.reset(token)
-
-
-class TelegramReplyAuditMiddleware(BaseRequestMiddleware):
-    def __init__(self, audit):
-        self.audit = audit
-
-    async def __call__(self, make_request, bot, method):
-        name = method.__api_method__
-        context = _conversation.get()
-        chat_id = getattr(method, "chat_id", None)
-        if name == "answerCallbackQuery" and context:
-            if method.callback_query_id == context.get("callback_query_id"):
-                chat_id = context["chat_id"]
-        if (
-            _control.get() or name not in _OUTGOING_METHODS
-            or chat_id is None or chat_id == self.audit.chat_id
-            or not isinstance(chat_id, int) or chat_id <= 0
-        ):
-            return await make_request(bot, method)
-        fields = {"method": name, "chat_id": chat_id}
-        for key in ("text", "caption", "message_id", "message_ids", "show_alert"):
-            value = getattr(method, key, None)
-            if value is not None:
-                fields[key] = self.audit.sanitize(value)
-        keyboard = getattr(method, "reply_markup", None)
-        if getattr(keyboard, "inline_keyboard", None):
-            fields["buttons"] = self.audit.sanitize([
-                [{key: value for key in ("text", "callback_data", "url")
-                  if (value := getattr(button, key, None)) is not None} for button in row]
-                for row in keyboard.inline_keyboard
-            ])
-        media = getattr(method, "media", None)
-        if isinstance(media, list):
-            fields["media"] = [
-                {
-                    "type": getattr(item.type, "value", item.type),
-                    "caption": self.audit.sanitize(item.caption),
-                }
-                for item in media
-            ]
-        elif getattr(media, "type", None) is not None:
-            fields["media"] = {
-                "type": getattr(media.type, "value", media.type),
-                "caption": self.audit.sanitize(getattr(media, "caption", None)),
-            }
-        operation = nullcontext() if context else self.audit.operation(user_id=chat_id)
-        with operation:
             try:
-                result = await make_request(bot, method)
+                await self.monitor.setup(bot, message.chat.id)
             except Exception as exc:
-                _emit(self.audit, "bot_reply_failed", **fields, error_type=type(exc).__name__)
-                raise
-            result_id = getattr(result, "message_id", None)
-            if result_id is not None:
-                fields["result_message_id"] = result_id
-            _emit(self.audit, "bot_reply", **fields)
-            return result
+                _report(self.monitor, "monitor", "setup_failed", exc, user_id=user.id)
+                await message.answer(
+                    "Не удалось настроить темы. Проверьте право бота на управление темами "
+                    "и повторите /monitor_setup.", parse_mode=None,
+                )
+            else:
+                await message.answer(
+                    "✅ Группа подключена. Темы: Пользователи, Ошибки.\n"
+                    "/monitor_status — состояние мониторинга.\n"
+                    "В личном чате: /db_user <telegram_id>, /db_user id:<id_в_БД>, "
+                    "/db_stats, /db_users.", parse_mode=None,
+                )
+            return True
+        if (
+            message.chat.type != ChatType.PRIVATE
+            and message.chat.id != self.monitor.chat_id
+        ):
+            await message.answer(
+                "Управление мониторингом доступно в личном чате с ботом "
+                "или в подключённой группе.", parse_mode=None,
+            )
+            return True
+        if command == "db_user":
+            await self._user_snapshot(message, arguments)
+        elif arguments:
+            await message.answer("Эта команда не принимает аргументы.", parse_mode=None)
+        elif command == "db_users":
+            await self._snapshot(message)
+        elif command == "db_stats":
+            try:
+                counts = await self.snapshots.stats()
+                labels = {
+                    "users": "Пользователи", "calendars": "Календари", "events": "События",
+                    "occurrences": "Экземпляры событий", "notifications": "Уведомления",
+                }
+                text = "Статистика базы данных:\n" + "\n".join(
+                    f"{label}: {int(counts[key])}" for key, label in labels.items()
+                )
+                await message.answer(text, parse_mode=None)
+            except Exception as exc:
+                _report(self.monitor, "database", "stats_failed", exc, user_id=user.id)
+                await message.answer("Не удалось получить статистику базы.", parse_mode=None)
+        else:
+            await message.answer(self.monitor.status_text(), parse_mode=None)
+        return True
+
+    async def _user_snapshot(self, message, arguments):
+        internal = arguments.startswith("id:")
+        raw = arguments[3:] if internal else arguments
+        if (
+            not raw or not raw.isascii() or not raw.isdecimal() or len(raw) > 19
+            or not 0 < int(raw) <= 2**63 - 1
+        ):
+            await message.answer(
+                "Используйте /db_user <telegram_id> или /db_user id:<id_в_БД>.", parse_mode=None,
+            )
+            return
+        await self._snapshot(message, {"user_id" if internal else "telegram_id": int(raw)})
+
+    async def _snapshot(self, message, selector=None):
+        path = None
+        try:
+            if selector is None:
+                path = await self.snapshots.users_snapshot()
+                caption = "Таблица users без сохранённых паролей"
+            else:
+                profile = await _load_user(self.sessions, **selector)
+                if profile is None:
+                    await message.answer("Пользователь не найден.", parse_mode=None)
+                    return
+                path = await self.snapshots.user_snapshot(
+                    **selector, metadata=self.monitor.profile(profile["telegram_id"]),
+                )
+                caption = "Снимок данных пользователя из базы."
+            if path is None:
+                await message.answer("Пользователь не найден.", parse_mode=None)
+                return
+            await message.answer_document(FSInputFile(path), caption=caption, parse_mode=None)
+        except Exception as exc:
+            _report(
+                self.monitor, "database", "snapshot_failed", exc, user_id=message.from_user.id,
+            )
+            if isinstance(exc, SnapshotTooLarge):
+                text = "Снимок превышает настроенный предел размера."
+            else:
+                text = "Не удалось подготовить или отправить снимок базы."
+            await message.answer(text, parse_mode=None)
+        finally:
+            if path is not None:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError as exc:
+                    _report(self.monitor, "database", "snapshot_cleanup_failed", exc)
 
 
-def install_telegram_audit(dispatcher, bot, audit):
-    """Install two removable middleware hooks; return idempotent sync cleanup."""
-    incoming = TelegramAuditMiddleware(audit)
-    outgoing = TelegramReplyAuditMiddleware(audit)
+def install_telegram_audit(dispatcher, bot, monitor, sessions, snapshots):
+    """Install optional hooks and polling subscription; return idempotent cleanup."""
+    incoming = TelegramMonitorMiddleware(monitor, sessions, snapshots)
     dispatcher.update.outer_middleware.register(incoming)
-    bot.session.middleware.register(outgoing)
+
+    async def membership_subscription(event):
+        return UNHANDLED
+
+    dispatcher.my_chat_member.register(membership_subscription)
 
     def cleanup():
         if incoming in dispatcher.update.outer_middleware:
             dispatcher.update.outer_middleware.unregister(incoming)
-        if outgoing in bot.session.middleware:
-            bot.session.middleware.unregister(outgoing)
+        dispatcher.my_chat_member.handlers[:] = [
+            handler for handler in dispatcher.my_chat_member.handlers
+            if handler.callback is not membership_subscription
+        ]
 
     return cleanup
