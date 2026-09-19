@@ -11,6 +11,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
@@ -47,6 +48,7 @@ class User(Base):
     __tablename__ = "users"
     __table_args__ = (
         CheckConstraint("advance_minutes IN (1, 3, 5, 10)", name="ck_users_advance_minutes"),
+        CheckConstraint("upcoming_event_days BETWEEN 1 AND 7", name="ck_users_upcoming_event_days"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -62,6 +64,10 @@ class User(Base):
     notify_updated: Mapped[bool] = mapped_column(Boolean, default=True)
     remind_at_start: Mapped[bool] = mapped_column(Boolean, default=True)
     advance_minutes: Mapped[int | None] = mapped_column(Integer, default=5, nullable=True)
+    upcoming_event_days: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    upcoming_catalog_mode: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
 

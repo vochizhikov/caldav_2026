@@ -243,10 +243,13 @@ async def test_created_updated_and_event_list_use_details(sessions, account, now
         monkeypatch.setattr("bot.handlers.events.user_routers.utcnow", lambda: now)
         message = SimpleNamespace(answer=AsyncMock())
         await show_events(message, session, user)
-        card = message.answer.call_args.args[0]
+        card = message.answer.call_args_list[-2].args[0]
         assert "📍 Сан-Хосе" in card and changed_url in card
+        assert "reply_markup" not in message.answer.call_args_list[-2].kwargs
+        assert message.answer.call_args.args[0] == "🏠 <b>Главное меню</b>"
         assert (
-            message.answer.call_args.kwargs["reply_markup"].inline_keyboard[0][0].text == "← Меню"
+            message.answer.call_args.kwargs["reply_markup"].inline_keyboard[0][0].callback_data
+            == "menu:calendars"
         )
 
 

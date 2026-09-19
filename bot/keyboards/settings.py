@@ -34,5 +34,12 @@ def settings_keyboard(user: User) -> InlineKeyboardMarkup:
     rows.append(
         [InlineKeyboardButton(text=f"🌍 {user.timezone}", callback_data="settings:timezone")]
     )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="🗓 Настройка ближайших событий", callback_data="settings:upcoming"
+            )
+        ]
+    )
     rows.append([InlineKeyboardButton(text="← Мои календари", callback_data="menu:calendars")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

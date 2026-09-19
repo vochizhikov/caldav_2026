@@ -25,3 +25,9 @@ def validate_advance(value: str) -> int | None:
     if value not in {"1", "3", "5", "10"}:
         raise ValueError("⏱️ Допустимо 1, 3, 5 или 10 минут.")
     return int(value)
+
+
+def validate_upcoming_days(value: str) -> int:
+    if value not in {"1", "2", "3", "4", "5", "6", "7"}:
+        raise ValueError("🗓 Выберите от 1 до 7 дней со встречами.")
+    return int(value)
